@@ -1,6 +1,5 @@
 package nz.geek.megan.gravasync;
 
-import android.annotation.TargetApi;
 import android.content.ContentProviderOperation;
 import android.content.Context;
 import android.database.Cursor;
@@ -10,13 +9,11 @@ import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.AsyncTask;
-import android.os.Build;
 import android.os.Bundle;
 import android.app.Activity;
 import android.util.Log;
 import android.view.Menu;
 import android.view.View;
-import android.widget.ImageView;
 import android.provider.ContactsContract;
 
 import java.io.ByteArrayOutputStream;
@@ -29,9 +26,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.AbstractMap;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.Map;
-import java.util.Set;
 
 public class MainActivity extends Activity {
 
@@ -51,23 +46,25 @@ public class MainActivity extends Activity {
         return true;
     }
 
-    public void doSync(View view) {
+    public void doSync(View _) {
         if (!checkConnectivity()) return;
 
         // Query Contacts database for all the emails of contacts
         Uri uri = ContactsContract.CommonDataKinds.Email.CONTENT_URI;
         String[] projection = new String[] {
                 ContactsContract.CommonDataKinds.Email.CONTACT_ID,
+                ContactsContract.CommonDataKinds.Email.LOOKUP_KEY,
                 ContactsContract.CommonDataKinds.Email.DATA
         };
 
         Cursor c = getContentResolver().query(uri, projection, null, null, null);
 
         int idIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Email.CONTACT_ID);
+        int lookupIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Email.LOOKUP_KEY);
         int dataIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Email.DATA);
 
         // All sorts of wrangling with generics thanks to Java's type erasure.
-        ArrayList<Map.Entry<String, String>> hashes = new ArrayList<Map.Entry<String, String>>();
+        ArrayList<Map.Entry<Contact, String>> hashes = new ArrayList<Map.Entry<Contact, String>>();
 
         if (c.moveToFirst())
         {
@@ -76,12 +73,13 @@ public class MainActivity extends Activity {
                 String hash = generateGravatarHash(email);
                 Log.d(TAG, "Hash: " + hash);
 
-                hashes.add(new AbstractMap.SimpleEntry<String, String>(c.getString(idIndex), hash));
+                hashes.add(new AbstractMap.SimpleEntry<Contact, String>(
+                        new Contact(c.getLong(idIndex), c.getString(lookupIndex)), hash));
 
 
             } while (c.moveToNext());
 
-            Map.Entry<String, String>[] a = (Map.Entry<String, String>[])new Map.Entry[hashes.size()];
+            Map.Entry<Contact, String>[] a = (Map.Entry<Contact, String>[])new Map.Entry[hashes.size()];
 
             for (int i = 0; i < hashes.size(); i++) a[i] = hashes.get(i);
             new DownloadAvatarTask().execute(a);
@@ -123,15 +121,33 @@ public class MainActivity extends Activity {
         return new String(hexChars);
     }
 
-    private class DownloadAvatarTask extends AsyncTask<Map.Entry<String, String>, Map.Entry<String, Bitmap>, Void> {
+    private class Contact {
+        private long id;
+        private String lookupKey;
 
-        protected Void doInBackground(Map.Entry<String, String>... hashes) {
+        public Contact(long id, String lookupKey) {
+            this.id = id;
+            this.lookupKey = lookupKey;
+        }
+
+        public long getId() {
+            return id;
+        }
+
+        public String getLookupKey() {
+            return lookupKey;
+        }
+    }
+
+    private class DownloadAvatarTask extends AsyncTask<Map.Entry<Contact, String>, Map.Entry<Contact, Bitmap>, Void> {
+
+        protected Void doInBackground(Map.Entry<Contact, String>... hashes) {
             for (int i = 0; i < hashes.length; i++)
             {
                 String url = String.format("http://www.gravatar.com/avatar/%s?s=400&d=404", hashes[i].getValue());
                 try {
                     Bitmap b = downloadUrl(url);
-                    publishProgress(new AbstractMap.SimpleEntry<String, Bitmap>(hashes[i].getKey(), b));
+                    publishProgress(new AbstractMap.SimpleEntry<Contact, Bitmap>(hashes[i].getKey(), b));
                 }
                 catch (IOException e) {
                 }
@@ -141,13 +157,34 @@ public class MainActivity extends Activity {
         }
 
         @Override
-        protected void onProgressUpdate(Map.Entry<String, Bitmap>... values) {
+        protected void onProgressUpdate(Map.Entry<Contact, Bitmap>... values) {
+            Contact c = values[0].getKey();
+
+            if (values[0].getValue() == null ) {
+                Log.d(TAG, String.format("Bitmap for user %d is null", c.getId()));
+                return;
+            }
+
+            // Check whether contact already has a photo
+            Uri u = ContactsContract.Contacts.getLookupUri(c.getId(), c.getLookupKey());
+            InputStream is = ContactsContract.Contacts.openContactPhotoInputStream(getContentResolver(), u);
+            if (is != null) {
+                try {
+                    is.close();
+                }
+                catch (IOException e) {}
+                Log.d(TAG, String.format("Already an avatar for user %d", c.getId()));
+                return;
+            }
+
+            // Compress bitmap from Gravatar and assign it to the contact
             ByteArrayOutputStream stream = new ByteArrayOutputStream();
+
             values[0].getValue().compress(Bitmap.CompressFormat.PNG, 75, stream);
             ArrayList<ContentProviderOperation> operations =
                     new ArrayList<ContentProviderOperation>();
             operations.add(ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                .withValue(ContactsContract.Data.RAW_CONTACT_ID, values[0].getKey())
+                .withValue(ContactsContract.Data.RAW_CONTACT_ID, c.getId())
                 .withValue(ContactsContract.Data.IS_SUPER_PRIMARY, 1)
                 .withValue(ContactsContract.Data.MIMETYPE, ContactsContract.CommonDataKinds.Photo.CONTENT_ITEM_TYPE)
                 .withValue(ContactsContract.CommonDataKinds.Photo.PHOTO, stream.toByteArray())
@@ -160,6 +197,7 @@ public class MainActivity extends Activity {
 
             try {
                 getContentResolver().applyBatch(ContactsContract.AUTHORITY, operations);
+                Log.d(TAG, String.format("Set avatar for %d", c.getId()));
             } catch (Exception e) {
                 Log.d(TAG, "Failed to update avatar", e);
             }
