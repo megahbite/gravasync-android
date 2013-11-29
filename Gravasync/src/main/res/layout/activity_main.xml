@@ -27,11 +27,14 @@
 
     </RelativeLayout>
 
-    <ImageView
-        android:id="@+id/avatar_image"
-        android:layout_width="200sp"
-        android:layout_height="200sp"
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_centerHorizontal="true"
         android:layout_alignParentBottom="true"
-        android:layout_centerHorizontal="true" />
+        android:layout_marginBottom="100sp"
+        android:textAlignment="center"
+        android:id="@+id/status" />
+
 
 </RelativeLayout>
